@@ -1,0 +1,32 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.pbxuser
+*.perspective
+*.perspectivev3
+!default.pbxuser
+!default.perspective
+!default.perspectivev3
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+.build/
+
+# Build artifacts
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcarchive
+
+# macOS
+.DS_Store
+
+# Release packaging (local)
+release/
+*.dmg
