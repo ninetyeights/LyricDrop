@@ -49,18 +49,20 @@ jobs:
             -archivePath build/LyricDrop.xcarchive \
             CODE_SIGN_IDENTITY=- \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM= \
             archive
 
       - name: Verify signature
         run: codesign -dv build/LyricDrop.xcarchive/Products/Applications/LyricDrop.app 2>&1 || true
 
-      - name: Strip extended attributes from app
+      - name: Strip extended attributes and re-sign ad-hoc
         run: |
           APP=build/LyricDrop.xcarchive/Products/Applications/LyricDrop.app
           xattr -cr "$APP"
+          codesign --force --deep --sign - --options runtime "$APP"
+          codesign -dv "$APP" 2>&1 | head -5
           xattr -lr "$APP" || true
 
       - name: Package DMG
