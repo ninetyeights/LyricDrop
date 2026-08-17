@@ -1,0 +1,48 @@
+<Window x:Class="LyricDrop.Views.DesktopLyricWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:LyricDrop.ViewModels"
+        Title="LyricDrop Desktop Lyric"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        ShowInTaskbar="False"
+        Topmost="False"
+        ResizeMode="NoResize"
+        Width="800" Height="120"
+        AllowDrop="True"
+        SizeToContent="Manual"
+        Drop="OnFileDrop"
+        DragOver="OnDragOver"
+        MouseEnter="OnMouseEnterWindow"
+        MouseLeave="OnMouseLeaveWindow"
+        MouseLeftButtonDown="OnMouseLeftDown">
+    <Grid x:Name="Root">
+        <!-- Hover background -->
+        <Border x:Name="BgHover" CornerRadius="14"
+                Background="#88000000"
+                Visibility="Collapsed" />
+
+        <!-- Lyric content -->
+        <ContentPresenter x:Name="LyricHost" HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+
+        <!-- Toolbar (visible on hover when unlocked) -->
+        <StackPanel x:Name="Toolbar" Orientation="Horizontal"
+                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Margin="0,4,8,0"
+                    Visibility="Collapsed">
+            <Button Click="OnSettingsClick" ToolTip="设置"
+                    Background="#88000000" Foreground="White" BorderThickness="0"
+                    Padding="6,3" Margin="2,0">
+                <TextBlock Text="⚙" FontSize="12" />
+            </Button>
+            <Button Click="OnLockClick" ToolTip="锁定"
+                    Background="#88000000" Foreground="White" BorderThickness="0"
+                    Padding="6,3" Margin="2,0">
+                <TextBlock Text="🔒" FontSize="12" />
+            </Button>
+        </StackPanel>
+    </Grid>
+</Window>

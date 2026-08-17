@@ -1,0 +1,153 @@
+<ui:FluentWindow x:Class="LyricDrop.Views.PlayerWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 xmlns:vm="clr-namespace:LyricDrop.ViewModels"
+                 xmlns:views="clr-namespace:LyricDrop.Views"
+                 Title="LyricDrop"
+                 Width="480" Height="640"
+                 AllowDrop="True"
+                 ShowInTaskbar="False"
+                 Topmost="False"
+                 ExtendsContentIntoTitleBar="True"
+                 WindowBackdropType="Mica"
+                 WindowCornerPreference="Round"
+                 ResizeMode="NoResize"
+                 WindowStartupLocation="Manual"
+                 Drop="OnFileDrop"
+                 DragOver="OnDragOver">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="LyricDrop" ShowMaximize="False" ShowMinimize="False" />
+
+        <Grid Grid.Row="1" Margin="14,4,14,14">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- File row -->
+            <StackPanel Grid.Row="0" Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding AudioFileName, FallbackValue='拖拽 / 打开音频文件'}"
+                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <ui:Button Grid.Column="1" Margin="6,0,0,0" Content="Open Audio" Click="OnOpenAudioClick" />
+                    <ui:Button Grid.Column="2" Margin="6,0,0,0" Content="Open LRC" Click="OnOpenLrcClick" />
+                </Grid>
+                <TextBlock Text="{Binding LrcFileName, FallbackValue='（未加载歌词）'}"
+                           Margin="0,4,0,0" TextTrimming="CharacterEllipsis" Opacity="0.7" FontSize="11" />
+            </StackPanel>
+
+            <!-- URL row -->
+            <Grid Grid.Row="1" Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <ui:TextBox x:Name="UrlBox" PlaceholderText="https:// 或网页地址" />
+                <ui:Button Grid.Column="1" Margin="6,0,0,0" Content="加载 URL" Click="OnLoadUrlClick" />
+            </Grid>
+
+            <!-- Progress row -->
+            <Grid Grid.Row="2" Margin="0,0,0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding CurrentTime, Converter={x:Static views:TimeConverter.Instance}}"
+                           VerticalAlignment="Center" Margin="0,0,6,0" Opacity="0.8" FontSize="11" />
+                <Slider x:Name="ProgressSlider" Grid.Column="1"
+                        Minimum="0"
+                        Maximum="{Binding Duration}"
+                        IsMoveToPointEnabled="True" />
+                <TextBlock Grid.Column="2" Margin="6,0,0,0"
+                           Text="{Binding Duration, Converter={x:Static views:TimeConverter.Instance}}"
+                           VerticalAlignment="Center" Opacity="0.8" FontSize="11" />
+            </Grid>
+
+            <!-- Transport row -->
+            <Grid Grid.Row="3" Margin="0,0,0,8">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <ui:Button Click="OnSkipBackClick" ToolTip="-5s" Margin="0,0,4,0" Content="«5" />
+                    <ui:Button x:Name="PlayPauseBtn" Click="OnPlayPauseClick" Content="▶"
+                               Appearance="Primary" />
+                    <ui:Button Click="OnStopClick" Margin="4,0,0,0" ToolTip="停止" Content="■" />
+                    <ui:Button Click="OnSkipFwdClick" ToolTip="+5s" Margin="4,0,0,0" Content="5»" />
+                    <ToggleButton Margin="10,0,0,0"
+                                     IsChecked="{Binding IsLooping, Mode=TwoWay}" ToolTip="循环播放" Content="↻" />
+                    <ToggleButton Margin="4,0,0,0"
+                                     IsChecked="{Binding DesktopLyricLocked, Mode=TwoWay}"
+                                     ToolTip="锁定桌面歌词（点击穿透）" Content="🔒" />
+                    <ui:Button Margin="10,0,0,0" Click="OnSettingsClick" ToolTip="歌词外观设置" Content="⚙ 设置" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Volume + speed row -->
+            <Grid Grid.Row="4" Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <ToggleButton x:Name="MuteToggle" Grid.Column="0"
+                                 IsChecked="{Binding IsMuted, Mode=TwoWay}" ToolTip="静音" Content="🔊" />
+                <Slider Grid.Column="1" Margin="6,0,0,0"
+                        Minimum="0" Maximum="1"
+                        Value="{Binding Volume, Mode=TwoWay}"
+                        SmallChange="0.05" LargeChange="0.1" />
+                <TextBlock Grid.Column="2" Margin="8,0,4,0" VerticalAlignment="Center" Text="速度" Opacity="0.8" FontSize="11" />
+                <ComboBox Grid.Column="3" Width="80" x:Name="RateBox" SelectionChanged="OnRateChanged">
+                    <ComboBoxItem Tag="0.5">0.5×</ComboBoxItem>
+                    <ComboBoxItem Tag="0.75">0.75×</ComboBoxItem>
+                    <ComboBoxItem Tag="1">1×</ComboBoxItem>
+                    <ComboBoxItem Tag="1.25">1.25×</ComboBoxItem>
+                    <ComboBoxItem Tag="1.5">1.5×</ComboBoxItem>
+                    <ComboBoxItem Tag="2">2×</ComboBoxItem>
+                </ComboBox>
+            </Grid>
+
+            <!-- Offset row -->
+            <Grid Grid.Row="5" Margin="0,0,0,8">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <TextBlock Text="歌词偏移" VerticalAlignment="Center" Margin="0,0,8,0" Opacity="0.8" FontSize="11" />
+                    <ui:Button Click="OnOffsetMinusClick" Content="−0.5s" />
+                    <ui:Button Margin="4,0" Click="OnOffsetResetClick"
+                               Content="{Binding LyricOffset, StringFormat={}{0:+0.0;-0.0;0}s}" />
+                    <ui:Button Click="OnOffsetPlusClick" Content="+0.5s" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Lyric list -->
+            <ListBox Grid.Row="6"
+                     x:Name="LyricList"
+                     ItemsSource="{Binding Lines}"
+                     SelectedIndex="{Binding CurrentIndex, Mode=OneWay}"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     MouseDoubleClick="OnLyricDoubleClick">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding Text}" TextTrimming="CharacterEllipsis" Padding="4,2" />
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>

@@ -1,0 +1,71 @@
+<ui:FluentWindow x:Class="LyricDrop.Views.SettingsWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="桌面歌词设置"
+                 Width="400" Height="560"
+                 ExtendsContentIntoTitleBar="True"
+                 WindowBackdropType="Mica"
+                 WindowCornerPreference="Round"
+                 WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="桌面歌词设置" ShowMaximize="False" ShowMinimize="False" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="20,8,20,16">
+            <StackPanel>
+
+                <TextBlock Text="主题" Margin="0,0,0,4" />
+                <ComboBox x:Name="ThemeBox" Margin="0,0,0,12" SelectionChanged="OnThemeChanged" />
+
+                <TextBlock Text="显示行数" Margin="0,0,0,4" />
+                <ComboBox x:Name="LineCountBox" Margin="0,0,0,12" SelectionChanged="OnLineCountChanged">
+                    <ComboBoxItem Tag="1">1 行</ComboBoxItem>
+                    <ComboBoxItem Tag="3">3 行</ComboBoxItem>
+                    <ComboBoxItem Tag="5">5 行</ComboBoxItem>
+                    <ComboBoxItem Tag="7">7 行</ComboBoxItem>
+                </ComboBox>
+
+                <TextBlock Text="字号" Margin="0,0,0,4" />
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Slider x:Name="FontSizeSlider" Minimum="14" Maximum="64"
+                            Value="{Binding LyricFontSize, Mode=TwoWay}"
+                            SmallChange="1" LargeChange="4" TickFrequency="2" IsSnapToTickEnabled="True" />
+                    <TextBlock Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Center"
+                               Text="{Binding LyricFontSize, StringFormat={}{0:0}px}" />
+                </Grid>
+
+                <TextBlock Text="窗口宽度比例" Margin="0,0,0,4" />
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Slider Minimum="0.30" Maximum="0.95"
+                            Value="{Binding LyricWidthRatio, Mode=TwoWay}"
+                            SmallChange="0.05" LargeChange="0.1" />
+                    <TextBlock Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Center"
+                               Text="{Binding LyricWidthRatio, StringFormat={}{0:P0}}" />
+                </Grid>
+
+                <TextBlock Text="字体" Margin="0,0,0,4" />
+                <ComboBox x:Name="FontBox" Margin="0,0,0,12" SelectionChanged="OnFontChanged" IsEditable="True" />
+
+                <CheckBox Content="文字阴影" IsChecked="{Binding LyricShadowEnabled, Mode=TwoWay}" Margin="0,4" />
+                <CheckBox Content="始终显示背景" IsChecked="{Binding LyricBgAlways, Mode=TwoWay}" Margin="0,4" />
+                <CheckBox Content="锁定（点击穿透；从播放器面板的锁按钮取消锁定）"
+                          IsChecked="{Binding DesktopLyricLocked, Mode=TwoWay}" Margin="0,4,0,12" />
+
+                <ui:Button Appearance="Primary" HorizontalAlignment="Stretch" Click="OnClose" Content="关闭" />
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</ui:FluentWindow>
