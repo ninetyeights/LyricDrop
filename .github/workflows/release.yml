@@ -1,44 +1,29 @@
-name: Release
+name: Secure Multi-Platform Release
 
 on:
   push:
     tags:
       - 'v*.*.*'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to build (e.g. v1.0.0)'
-        required: true
-        default: 'v1.0.0'
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  build:
-    name: Build & Release
+  build-macos:
+    name: Build macOS
     runs-on: macos-latest
-
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: |
-          sudo xcode-select -s /Applications/Xcode.app
-          xcodebuild -version
-
       - name: Resolve version
         id: version
-        run: |
-          TAG="${{ inputs.tag }}"
-          if [ -z "$TAG" ]; then TAG="$GITHUB_REF_NAME"; fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Archive (ad-hoc signed)
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Archive app
         run: |
           mkdir -p build
           xcodebuild \
@@ -53,18 +38,12 @@ jobs:
             CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM= \
             archive
-
-      - name: Verify signature
-        run: codesign -dv build/LyricDrop.xcarchive/Products/Applications/LyricDrop.app 2>&1 || true
-
-      - name: Strip extended attributes and re-sign ad-hoc
+      - name: Re-sign ad-hoc
         run: |
           APP=build/LyricDrop.xcarchive/Products/Applications/LyricDrop.app
           xattr -cr "$APP"
           codesign --force --deep --sign - --options runtime "$APP"
-          codesign -dv "$APP" 2>&1 | head -5
-          xattr -lr "$APP" || true
-
+          codesign --verify --deep --strict "$APP"
       - name: Package DMG
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -72,38 +51,88 @@ jobs:
           STAGE=build/dmg-stage
           mkdir -p "$STAGE"
           cp -R build/LyricDrop.xcarchive/Products/Applications/LyricDrop.app "$STAGE/"
-          xattr -cr "$STAGE/LyricDrop.app"
           ln -s /Applications "$STAGE/Applications"
           hdiutil create \
             -volname "LyricDrop" \
             -srcfolder "$STAGE" \
             -ov -format UDZO \
-            "build/LyricDrop-${VERSION}.dmg"
-          xattr -cr "build/LyricDrop-${VERSION}.dmg"
-          ls -la "build/LyricDrop-${VERSION}.dmg"
-
-      - name: Attest build provenance
+            "build/LyricDrop-${VERSION}-macOS.dmg"
+      - name: Attest macOS artifact
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: build/LyricDrop-*.dmg
+          subject-path: 'build/LyricDrop-*-macOS.dmg'
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: build/LyricDrop-*-macOS.dmg
+          if-no-files-found: error
 
-      - name: Create or update GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore LyricDrop-Windows.Tests/LyricDrop.Windows.Tests.csproj -r win-x64
+      - name: Test
+        run: dotnet test LyricDrop-Windows.Tests/LyricDrop.Windows.Tests.csproj -c Release -r win-x64 --no-restore
+      - name: Publish self-contained app
+        shell: pwsh
         run: |
-          NOTES_FILE=release_notes.md
-          if [ ! -f "$NOTES_FILE" ]; then
-            echo "# LyricDrop ${VERSION}" > "$NOTES_FILE"
-            echo "" >> "$NOTES_FILE"
-            echo "Auto-generated release from tag ${TAG}." >> "$NOTES_FILE"
-          fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "build/LyricDrop-${VERSION}.dmg" --clobber
-          else
-            gh release create "$TAG" \
-              --title "LyricDrop ${VERSION}" \
-              --notes-file "$NOTES_FILE" \
-              "build/LyricDrop-${VERSION}.dmg"
-          fi
+          dotnet publish LyricDrop-Windows/LyricDrop.Windows.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            --no-restore `
+            -p:PublishSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -p:TreatWarningsAsErrors=true `
+            -o publish
+      - name: Package Windows app
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}' -replace '^v', ''
+          $stage = "LyricDrop-Windows-$version-win-x64"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item -Path 'publish\*' -Destination $stage
+          Copy-Item -LiteralPath 'LyricDrop-Windows\README.md', 'LyricDrop-Windows\RELEASE_NOTES.md', 'LICENSE' -Destination $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath "$stage.zip" -CompressionLevel Optimal
+      - name: Attest Windows artifact
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'LyricDrop-Windows-*-win-x64.zip'
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: LyricDrop-Windows-*-win-x64.zip
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

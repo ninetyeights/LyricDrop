@@ -24,6 +24,41 @@ dotnet build -c Release
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 ```
 
+## 如何发布新版本
+
+本项目使用 GitHub Actions 自动构建、生成 Attestation 并发布。发布资产必须由 CI 上传，不能在 GitHub 网页中手动替换。
+
+### 发布步骤
+
+1. 确认所有更改已经提交并推送：
+
+   ```pwsh
+   git status
+   git add .
+   git commit -m "你的改动说明"
+   git push origin main
+   ```
+
+2. 创建并推送版本标签：
+
+   ```pwsh
+   git tag -a v1.0.1 -m "Release version 1.0.1"
+   git push origin v1.0.1
+   ```
+
+3. 在仓库的 **Actions** 页面查看构建进度，在 **Releases** 页面下载完成 Attestation 的发布包。
+
+版本号遵循语义化版本：重大不兼容更新使用 `vX.0.0`，新增兼容功能使用 `vX.Y.0`，Bug 修复使用 `vX.Y.Z`。
+
+如果构建失败，先查看 Actions 日志并修复代码；然后删除失败的本地与远程标签，重新创建并推送：
+
+```pwsh
+git tag -d v1.0.1
+git push origin :refs/tags/v1.0.1
+git tag -a v1.0.1 -m "Release version 1.0.1"
+git push origin v1.0.1
+```
+
 ## 使用
 
 启动后会在系统托盘看到一个 ♪ 图标：
