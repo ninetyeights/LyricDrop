@@ -1,6 +1,21 @@
-# LyricDrop for Windows 1.0.0
+# LyricDrop for Windows 1.0.3
 
-首个 Windows 公开版本。
+本版本集中修复远程加载、依赖供应链和诊断日志方面的安全问题，并升级测试与发布基础设施。
+
+## 安全更新
+
+- 限制远程页面、歌词和音频的下载大小与超时时间
+- 阻止 URL 加载访问本机、局域网、链路本地及保留地址，并逐次验证重定向
+- 拒绝 URL 中嵌入用户名或密码，避免凭据被持久化
+- 崩溃日志脱敏、限制单条大小并增加日志轮转
+- 添加 NuGet 锁文件、全量漏洞审计与 CI 锁定恢复
+- GitHub Actions 升级到当前稳定大版本并固定不可变提交 SHA
+
+## 依赖与测试
+
+- 升级 H.NotifyIcon.Wpf 至 2.4.1
+- 迁移到 xUnit v3、Microsoft Testing Platform v2 和 Test SDK 18
+- 新增网络地址策略、日志隐私、URL 凭据和超大 LRC 边界测试
 
 ## 功能
 

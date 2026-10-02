@@ -1,8 +1,10 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
@@ -14,6 +16,9 @@ namespace LyricDrop;
 
 public partial class App : Application
 {
+    private const long MaxCrashLogBytes = 1024 * 1024;
+    private const int MaxCrashEntryChars = 64 * 1024;
+    private static readonly object CrashLogLock = new();
     public static bool IsShuttingDown { get; private set; }
 
     public LyricPlayer Player { get; private set; } = null!;
@@ -26,7 +31,13 @@ public partial class App : Application
         base.OnStartup(e);
 
         AppDomain.CurrentDomain.UnhandledException += (_, args) => LogFatal(args.ExceptionObject as Exception);
-        DispatcherUnhandledException += (_, args) => { LogFatal(args.Exception); args.Handled = true; };
+        DispatcherUnhandledException += (_, args) =>
+        {
+            LogFatal(args.Exception);
+            // Continuing after an unknown UI-thread failure can leave playback or window
+            // state inconsistent. Let WPF terminate after the sanitized diagnostic is saved.
+            args.Handled = false;
+        };
 
         Player = new LyricPlayer();
 
@@ -67,11 +78,43 @@ public partial class App : Application
             var dir = System.IO.Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LyricDrop");
             System.IO.Directory.CreateDirectory(dir);
-            System.IO.File.AppendAllText(
-                System.IO.Path.Combine(dir, "crash.log"),
-                $"\n[{DateTime.Now:O}] {ex}\n");
+            var logPath = System.IO.Path.Combine(dir, "crash.log");
+            var previousLogPath = System.IO.Path.Combine(dir, "crash.previous.log");
+            var entry = FormatExceptionForLog(ex);
+
+            lock (CrashLogLock)
+            {
+                if (System.IO.File.Exists(logPath) && new FileInfo(logPath).Length >= MaxCrashLogBytes)
+                    System.IO.File.Move(logPath, previousLogPath, overwrite: true);
+
+                System.IO.File.AppendAllText(logPath, entry, Encoding.UTF8);
+            }
         }
         catch { }
+    }
+
+    internal static string FormatExceptionForLog(Exception ex)
+    {
+        var output = new StringBuilder();
+        output.AppendLine($"[{DateTimeOffset.UtcNow:O}] Unhandled exception");
+
+        Exception? current = ex;
+        for (var depth = 0; current is not null && depth < 5; depth++, current = current.InnerException)
+        {
+            output.AppendLine($"Exception[{depth}]: {current.GetType().FullName}");
+            output.AppendLine($"HResult[{depth}]: 0x{current.HResult:X8}");
+            if (current.TargetSite is not null)
+                output.AppendLine($"Target[{depth}]: {current.TargetSite.DeclaringType?.FullName}.{current.TargetSite.Name}");
+
+            // Request no source-file information so local user names and workspace paths
+            // cannot leak when a development build writes a crash report.
+            var stack = new StackTrace(current, fNeedFileInfo: false).ToString();
+            if (!string.IsNullOrWhiteSpace(stack)) output.AppendLine(stack);
+        }
+
+        output.AppendLine();
+        var entry = output.ToString();
+        return entry.Length <= MaxCrashEntryChars ? entry : entry[..MaxCrashEntryChars] + "\n[truncated]\n";
     }
 
     private void TogglePlayerPanel()

@@ -1,6 +1,8 @@
 # LyricDrop
 
-一款极简的 macOS 菜单栏 LRC 歌词播放器。常驻菜单栏，实时显示当前歌词，支持桌面悬浮歌词和卡拉 OK 模式。
+一款极简的 LRC 歌词播放器，现已支持 **macOS**（菜单栏常驻）和 **Windows**（系统托盘常驻）。实时显示当前歌词，支持桌面悬浮歌词。
+
+本文档主要介绍 macOS 版本；Windows 版本见 [`LyricDrop-Windows/README.md`](LyricDrop-Windows/README.md)。
 
 ## 截图
 

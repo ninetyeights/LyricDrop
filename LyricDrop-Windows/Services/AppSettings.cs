@@ -7,6 +7,7 @@ namespace LyricDrop.Services;
 
 public sealed class AppSettings
 {
+    private const long MaxSettingsFileBytes = 1024 * 1024;
     public string LastAudioPath { get; set; } = string.Empty;
     public string LastLrcPath { get; set; } = string.Empty;
     public bool DesktopLyricLocked { get; set; }
@@ -43,6 +44,7 @@ public sealed class AppSettings
         {
             if (File.Exists(FilePath))
             {
+                if (new FileInfo(FilePath).Length > MaxSettingsFileBytes) return new AppSettings();
                 var json = File.ReadAllText(FilePath);
                 return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
             }

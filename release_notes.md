@@ -1,6 +1,13 @@
-# LyricDrop 1.0.0
+# LyricDrop 1.0.3
 
-首个公开版本。
+本版本加入 Windows 发行版，并完成跨平台发布流程和安全加固。
+
+## 本次更新
+
+- GitHub Release 同时提供 macOS DMG 与 Windows x64 绿色版
+- 两个平台的构建产物均生成 build provenance attestation
+- 发布与 CodeQL 工作流升级并固定到不可变 Action 提交
+- Windows 版完成远程加载、依赖锁定、日志隐私和凭据保护加固
 
 ## 核心功能
 

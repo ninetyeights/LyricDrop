@@ -10,6 +10,7 @@ namespace LyricDrop.Services;
 
 public static class LrcParser
 {
+    private const long MaxLrcFileBytes = 5 * 1024 * 1024;
     // Matches a single leading [mm:ss.xx] timestamp token (no trailing lyric capture,
     // so multiple timestamps on one line can be peeled off one at a time).
     private static readonly Regex StampPattern = new(
@@ -66,6 +67,8 @@ public static class LrcParser
 
     public static string ReadFileWithEncodingFallback(string path)
     {
+        if (new FileInfo(path).Length > MaxLrcFileBytes)
+            throw new InvalidDataException("LRC 文件超过 5 MiB 限制");
         var bytes = File.ReadAllBytes(path);
         return DecodeBytes(bytes);
     }

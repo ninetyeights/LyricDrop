@@ -4,9 +4,13 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -22,7 +26,21 @@ public sealed class LyricPlayer : INotifyPropertyChanged, IDisposable
     private readonly MediaPlayer _media = new();
     private readonly DispatcherTimer _timer;
     private readonly AppSettings _settings;
-    private static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = true });
+    private const long MaxAudioDownloadBytes = 1024L * 1024 * 1024;
+    private const int MaxWebpageBytes = 2 * 1024 * 1024;
+    private const int MaxLrcDownloadBytes = 5 * 1024 * 1024;
+    private const int MaxRedirects = 5;
+    private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".mp3", ".wav", ".aiff", ".aif", ".aac", ".m4a", ".flac", ".ogg", ".wma", ".mp4" };
+    private static readonly HttpClient Http = new(new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        UseProxy = false,
+        ConnectCallback = ConnectPublicEndpointAsync
+    })
+    {
+        Timeout = TimeSpan.FromMinutes(2)
+    };
 
     private string _audioFileName = string.Empty;
     private string _lrcFileName = string.Empty;
@@ -268,7 +286,16 @@ public sealed class LyricPlayer : INotifyPropertyChanged, IDisposable
     public async Task LoadAudioFromUrlAsync(string urlString)
     {
         urlString = (urlString ?? string.Empty).Trim();
-        if (!Uri.TryCreate(urlString, UriKind.Absolute, out var url)) return;
+        if (!Uri.TryCreate(urlString, UriKind.Absolute, out var url) || !IsHttpUrl(url))
+        {
+            AudioFileName = "仅支持 HTTP 或 HTTPS 地址";
+            return;
+        }
+        if (HasEmbeddedCredentials(url))
+        {
+            AudioFileName = "URL 不能包含用户名或密码";
+            return;
+        }
 
         IsLoadingUrl = true;
         AudioFileName = "加载中…";
@@ -290,14 +317,17 @@ public sealed class LyricPlayer : INotifyPropertyChanged, IDisposable
             }
 
             // Download audio to temp; MediaPlayer.Open over http works but local file is more reliable
+            if (!IsHttpUrl(audioUrl)) throw new InvalidDataException("音频地址协议不受支持");
+            var audioExtension = Path.GetExtension(audioUrl.AbsolutePath);
+            if (!AudioExtensions.Contains(audioExtension)) audioExtension = ".mp3";
             var tempPath = Path.Combine(Path.GetTempPath(),
-                $"lyricdrop_{Guid.NewGuid():N}{(string.IsNullOrEmpty(Path.GetExtension(audioUrl.AbsolutePath)) ? ".mp3" : Path.GetExtension(audioUrl.AbsolutePath))}");
+                $"lyricdrop_{Guid.NewGuid():N}{audioExtension}");
             pendingTempPath = tempPath;
-            using (var resp = await Http.GetAsync(audioUrl, HttpCompletionOption.ResponseHeadersRead))
+            using (var resp = await GetPublicResponseAsync(audioUrl))
             {
                 resp.EnsureSuccessStatusCode();
                 await using var fs = File.Create(tempPath);
-                await resp.Content.CopyToAsync(fs);
+                await CopyResponseToAsync(resp, fs, MaxAudioDownloadBytes);
             }
 
             _media.Stop();
@@ -344,18 +374,22 @@ public sealed class LyricPlayer : INotifyPropertyChanged, IDisposable
     {
         try
         {
-            var html = await Http.GetStringAsync(url);
+            var html = Encoding.UTF8.GetString(await DownloadBytesAsync(url, MaxWebpageBytes));
             var highUri = ExtractJs(html, "\"high_uri\"\\s*:\\s*\"([^\"]+)\"");
             var lrcUri = ExtractJs(html, "\"lrc_uri\"\\s*:\\s*\"([^\"]+)\"");
             var highFile = ExtractJs(html, "\"high\"\\s*:\\s*\"([^\"]+)\"");
             var lrcFile = ExtractJs(html, "\"lrc\"\\s*:\\s*\"([^\"]+)\"");
 
             if (highUri is null || highFile is null) return (null, null);
-            if (!Uri.TryCreate(highUri + highFile, UriKind.Absolute, out var audioUrl)) return (null, null);
+            if (!Uri.TryCreate(highUri + highFile, UriKind.Absolute, out var audioUrl) || !IsHttpUrl(audioUrl))
+                return (null, null);
 
             Uri? lrc = null;
             if (lrcUri is not null && lrcFile is not null)
+            {
                 Uri.TryCreate(lrcUri + lrcFile, UriKind.Absolute, out lrc);
+                if (lrc is not null && !IsHttpUrl(lrc)) lrc = null;
+            }
             return (audioUrl, lrc);
         }
         catch { return (null, null); }
@@ -372,7 +406,8 @@ public sealed class LyricPlayer : INotifyPropertyChanged, IDisposable
     {
         try
         {
-            var bytes = await Http.GetByteArrayAsync(lrcUrl);
+            if (!IsHttpUrl(lrcUrl)) return;
+            var bytes = await DownloadBytesAsync(lrcUrl, MaxLrcDownloadBytes);
             var content = LrcParser.DecodeBytes(bytes);
             ApplyLrcContent(content, Path.GetFileName(lrcUrl.AbsolutePath));
         }
@@ -395,14 +430,152 @@ public sealed class LyricPlayer : INotifyPropertyChanged, IDisposable
         {
             try
             {
-                using var resp = await Http.GetAsync(c);
+                if (!IsHttpUrl(c)) continue;
+                using var resp = await GetPublicResponseAsync(c);
                 if (!resp.IsSuccessStatusCode) continue;
-                var bytes = await resp.Content.ReadAsByteArrayAsync();
+                var bytes = await ReadLimitedBytesAsync(resp, MaxLrcDownloadBytes);
                 var content = LrcParser.DecodeBytes(bytes);
                 ApplyLrcContent(content, Path.GetFileNameWithoutExtension(audioUrl.AbsolutePath) + ".lrc");
                 return;
             }
             catch { /* try next */ }
+        }
+    }
+
+    private static bool IsHttpUrl(Uri uri) =>
+        uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+        uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
+
+    internal static bool HasEmbeddedCredentials(Uri uri) => !string.IsNullOrEmpty(uri.UserInfo);
+
+    private static async ValueTask<Stream> ConnectPublicEndpointAsync(
+        SocketsHttpConnectionContext context,
+        CancellationToken cancellationToken)
+    {
+        var addresses = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken);
+        var publicAddresses = addresses.Where(IsPublicIpAddress).ToArray();
+        if (publicAddresses.Length == 0)
+            throw new HttpRequestException("已阻止访问本机或局域网地址");
+
+        Exception? lastError = null;
+        foreach (var address in publicAddresses)
+        {
+            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+            try
+            {
+                await socket.ConnectAsync(new IPEndPoint(address, context.DnsEndPoint.Port), cancellationToken);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (Exception ex) when (ex is SocketException or OperationCanceledException)
+            {
+                socket.Dispose();
+                lastError = ex;
+                if (ex is OperationCanceledException) throw;
+            }
+        }
+
+        throw new HttpRequestException("无法连接到远程服务器", lastError);
+    }
+
+    internal static bool IsPublicIpAddress(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var b = address.GetAddressBytes();
+            return b[0] != 0 &&
+                   b[0] != 10 &&
+                   b[0] != 127 &&
+                   !(b[0] == 100 && b[1] is >= 64 and <= 127) &&
+                   !(b[0] == 169 && b[1] == 254) &&
+                   !(b[0] == 172 && b[1] is >= 16 and <= 31) &&
+                   !(b[0] == 192 && b[1] == 0 && b[2] == 0) &&
+                   !(b[0] == 192 && b[1] == 0 && b[2] == 2) &&
+                   !(b[0] == 192 && b[1] == 88 && b[2] == 99) &&
+                   !(b[0] == 192 && b[1] == 168) &&
+                   !(b[0] == 198 && b[1] is 18 or 19) &&
+                   !(b[0] == 198 && b[1] == 51 && b[2] == 100) &&
+                   !(b[0] == 203 && b[1] == 0 && b[2] == 113) &&
+                   b[0] < 224;
+        }
+
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            if (IPAddress.IsLoopback(address) || address.Equals(IPAddress.IPv6Any) ||
+                address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6Multicast)
+                return false;
+
+            // Only permit globally routable IPv6 unicast (2000::/3). This also excludes
+            // ULA, documentation, unspecified and IPv4 translation ranges.
+            return (address.GetAddressBytes()[0] & 0xE0) == 0x20;
+        }
+
+        return false;
+    }
+
+    private static async Task<HttpResponseMessage> GetPublicResponseAsync(Uri uri)
+    {
+        var current = uri;
+        for (var redirect = 0; redirect <= MaxRedirects; redirect++)
+        {
+            if (!IsHttpUrl(current)) throw new HttpRequestException("仅支持 HTTP 或 HTTPS 地址");
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, current);
+            var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            if (!IsRedirect(response.StatusCode)) return response;
+
+            var location = response.Headers.Location;
+            response.Dispose();
+            if (location is null) throw new HttpRequestException("服务器返回了无效的重定向");
+            current = location.IsAbsoluteUri ? location : new Uri(current, location);
+        }
+
+        throw new HttpRequestException($"重定向次数超过 {MaxRedirects} 次");
+    }
+
+    private static bool IsRedirect(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.Moved or HttpStatusCode.Redirect or HttpStatusCode.RedirectMethod or
+            HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
+
+    private static async Task<byte[]> DownloadBytesAsync(Uri uri, int maxBytes)
+    {
+        using var response = await GetPublicResponseAsync(uri);
+        response.EnsureSuccessStatusCode();
+        return await ReadLimitedBytesAsync(response, maxBytes);
+    }
+
+    private static async Task<byte[]> ReadLimitedBytesAsync(HttpResponseMessage response, int maxBytes)
+    {
+        if (response.Content.Headers.ContentLength is long contentLength && contentLength > maxBytes)
+            throw new InvalidDataException("下载内容超过允许的大小");
+
+        await using var source = await response.Content.ReadAsStreamAsync();
+        using var destination = new MemoryStream(Math.Min(maxBytes, 64 * 1024));
+        await CopyToWithLimitAsync(source, destination, maxBytes);
+        return destination.ToArray();
+    }
+
+    private static async Task CopyResponseToAsync(HttpResponseMessage response, Stream destination, long maxBytes)
+    {
+        if (response.Content.Headers.ContentLength is long contentLength && contentLength > maxBytes)
+            throw new InvalidDataException("音频文件超过 1 GiB 限制");
+
+        await using var source = await response.Content.ReadAsStreamAsync();
+        await CopyToWithLimitAsync(source, destination, maxBytes);
+    }
+
+    private static async Task CopyToWithLimitAsync(Stream source, Stream destination, long maxBytes)
+    {
+        var buffer = new byte[64 * 1024];
+        long total = 0;
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer);
+            if (read == 0) break;
+            total += read;
+            if (total > maxBytes) throw new InvalidDataException("下载内容超过允许的大小");
+            await destination.WriteAsync(buffer.AsMemory(0, read));
         }
     }
 

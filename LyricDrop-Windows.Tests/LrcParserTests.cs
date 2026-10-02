@@ -1,3 +1,4 @@
+using System.IO;
 using System.Linq;
 using System.Text;
 using LyricDrop.Services;
@@ -107,5 +108,21 @@ public class LrcParserTests
         var bytes = gb.GetBytes("你好世界，这是一段中文歌词");
 
         Assert.Equal("你好世界，这是一段中文歌词", LrcParser.DecodeBytes(bytes));
+    }
+
+    [Fact]
+    public void ReadFileWithEncodingFallback_OversizedFile_IsRejected()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"lyricdrop-test-{System.Guid.NewGuid():N}.lrc");
+        try
+        {
+            using (var file = File.Create(path)) file.SetLength(5L * 1024 * 1024 + 1);
+            var error = Assert.Throws<InvalidDataException>(() => LrcParser.ReadFileWithEncodingFallback(path));
+            Assert.Contains("5 MiB", error.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

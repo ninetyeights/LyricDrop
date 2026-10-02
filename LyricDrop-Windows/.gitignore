@@ -3,3 +3,13 @@ obj/
 *.user
 *.suo
 .vs/
+
+# Local secrets and signing material
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+secrets.json
