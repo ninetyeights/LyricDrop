@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build (e.g. v1.0.0)'
+        description: 'Tag to build (e.g. v1.0.2)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.0.2'
 
 permissions:
   contents: write
@@ -23,7 +23,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Select Xcode
         run: |
@@ -32,9 +34,15 @@ jobs:
 
       - name: Resolve version
         id: version
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${{ inputs.tag }}"
+          TAG="$REQUESTED_TAG"
           if [ -z "$TAG" ]; then TAG="$GITHUB_REF_NAME"; fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
@@ -83,7 +91,7 @@ jobs:
           ls -la "build/LyricDrop-${VERSION}.dmg"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: build/LyricDrop-*.dmg
 

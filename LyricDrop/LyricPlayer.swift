@@ -77,6 +77,18 @@ enum LyricScrollMode: Int, CaseIterable, Identifiable {
 
 @MainActor
 class LyricPlayer: ObservableObject {
+    private enum LoadError: Error {
+        case invalidURL
+        case insecureURL
+        case localNetworkURL
+        case responseTooLarge
+        case invalidResponse
+    }
+
+    private static let maxLRCBytes = 5 * 1024 * 1024
+    private static let maxWebpageBytes = 5 * 1024 * 1024
+    private static let maxAudioBytes = 500 * 1024 * 1024
+    private static let allowedAudioExtensions = Set(["mp3", "wav", "aiff", "aac", "m4a", "flac", "ogg", "wma"])
     // Current lyric line (full text)
     @Published var currentLine: String = ""
     // All parsed lyric lines
@@ -143,9 +155,12 @@ class LyricPlayer: ObservableObject {
     private var timer: Timer?
     private var audioURL: URL?
     private var lrcURL: URL?
+    private var audioSecurityScopedURL: URL?
 
     private static let audioPathKey = "lastAudioPath"
     private static let lrcPathKey = "lastLRCPath"
+    private static let audioBookmarkKey = "lastAudioBookmark"
+    private static let lrcBookmarkKey = "lastLRCBookmark"
     private static let karaokeKey = "karaokeEnabled"
     private static let ud = UserDefaults.standard
 
@@ -314,7 +329,13 @@ class LyricPlayer: ObservableObject {
         }
 
         do {
-            let data = try Data(contentsOf: url)
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values.isRegularFile == true,
+                  let fileSize = values.fileSize,
+                  fileSize <= Self.maxLRCBytes else {
+                throw LoadError.responseTooLarge
+            }
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
 
             let text = String(data: data, encoding: .utf16)
                 ?? String(data: data, encoding: .utf16LittleEndian)
@@ -329,7 +350,8 @@ class LyricPlayer: ObservableObject {
             lines = parseLRC(content)
             currentIndex = -1
             currentLine = ""
-            UserDefaults.standard.set(url.path, forKey: Self.lrcPathKey)
+            saveSecurityScopedBookmark(for: url, key: Self.lrcBookmarkKey)
+            Self.ud.removeObject(forKey: Self.lrcPathKey)
             refreshDisplay()
         } catch {
             print("Read error: \(error)")
@@ -372,12 +394,17 @@ class LyricPlayer: ObservableObject {
     @Published var isLoadingURL: Bool = false
 
     func loadAudioFromURL(_ urlString: String) {
-        guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        guard let candidate = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let url = try? validatedRemoteURL(candidate) else { return }
         isLoadingURL = true
         audioFileName = "Loading..."
 
         Task {
             let config = URLSessionConfiguration.default
+            config.requestCachePolicy = .reloadIgnoringLocalCacheData
+            config.timeoutIntervalForRequest = 30
+            config.timeoutIntervalForResource = 300
+            config.urlCache = nil
             config.httpAdditionalHeaders = [
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
             ]
@@ -409,7 +436,7 @@ class LyricPlayer: ObservableObject {
 
     /// Parse HTML page to extract audio and LRC URLs from embedded JavaScript
     private func parseWebpageForMedia(url: URL, session: URLSession) async -> (audio: URL, lrc: URL?)? {
-        guard let (data, _) = try? await session.data(from: url),
+        guard let (data, _) = try? await downloadData(from: url, maximumBytes: Self.maxWebpageBytes, session: session),
               let html = String(data: data, encoding: .utf8) else { return nil }
 
         // Extract base URIs from gospelHymns.items
@@ -420,14 +447,15 @@ class LyricPlayer: ObservableObject {
         let highFile = extractJSString(from: html, pattern: #""high"\s*:\s*"([^"]+)""#)
         let lrcFile = extractJSString(from: html, pattern: #""lrc"\s*:\s*"([^"]+)""#)
 
-        print("Parsed page - highURI: \(highURI ?? "nil"), highFile: \(highFile ?? "nil"), lrcURI: \(lrcURI ?? "nil"), lrcFile: \(lrcFile ?? "nil")")
-
         guard let baseURI = highURI, let file = highFile,
-              let audioURL = URL(string: baseURI + file) else { return nil }
+              let candidateAudioURL = URL(string: baseURI + file),
+              let audioURL = try? validatedRemoteURL(candidateAudioURL) else { return nil }
 
         var lrcURL: URL? = nil
         if let lrcBase = lrcURI, let lrcName = lrcFile {
-            lrcURL = URL(string: lrcBase + lrcName)
+            if let candidateLRCURL = URL(string: lrcBase + lrcName) {
+                lrcURL = try? validatedRemoteURL(candidateLRCURL)
+            }
         }
 
         return (audioURL, lrcURL)
@@ -444,12 +472,9 @@ class LyricPlayer: ObservableObject {
     }
 
     private func downloadAndLoadAudio(audioURL: URL, lrcURL: URL?, saveURL: URL, session: URLSession) async {
-        print("Downloading audio: \(audioURL)")
         // Download audio data
-        guard let (data, response) = try? await session.data(from: audioURL),
-              let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            print("Audio download failed: \(audioURL)")
+        guard let (data, _) = try? await downloadData(from: audioURL, maximumBytes: Self.maxAudioBytes, session: session) else {
+            print("Audio download failed")
             await MainActor.run {
                 audioFileName = ""
                 isLoadingURL = false
@@ -457,13 +482,20 @@ class LyricPlayer: ObservableObject {
             return
         }
 
-        let ext = audioURL.pathExtension.isEmpty ? "mp3" : audioURL.pathExtension
+        let requestedExtension = audioURL.pathExtension.lowercased()
+        let ext = Self.allowedAudioExtensions.contains(requestedExtension) ? requestedExtension : "mp3"
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(ext)
-        try? data.write(to: dest)
-        print("Audio saved to: \(dest), size: \(data.count) bytes")
-
+        do {
+            try data.write(to: dest, options: [.atomic, .completeFileProtection])
+        } catch {
+            await MainActor.run {
+                audioFileName = ""
+                isLoadingURL = false
+            }
+            return
+        }
         await MainActor.run {
             do {
                 audioPlayer = try AVAudioPlayer(contentsOf: dest)
@@ -472,10 +504,17 @@ class LyricPlayer: ObservableObject {
                 audioPlayer?.prepareToPlay()
                 audioPlayer?.volume = isMuted ? 0 : volume
                 duration = audioPlayer?.duration ?? 0
+                stopAccessingAudioResource()
+                removeTemporaryAudioIfNeeded()
                 self.audioURL = dest
                 audioFileName = audioURL.lastPathComponent
                 currentTime = 0
-                UserDefaults.standard.set(saveURL.absoluteString, forKey: Self.audioPathKey)
+                if saveURL.query == nil, saveURL.fragment == nil, saveURL.user == nil, saveURL.password == nil {
+                    UserDefaults.standard.set(saveURL.absoluteString, forKey: Self.audioPathKey)
+                } else {
+                    UserDefaults.standard.removeObject(forKey: Self.audioPathKey)
+                }
+                Self.ud.removeObject(forKey: Self.audioBookmarkKey)
             } catch {
                 audioFileName = ""
                 isLoadingURL = false
@@ -485,9 +524,7 @@ class LyricPlayer: ObservableObject {
 
         // Load LRC
         if let lrcURL = lrcURL {
-            if let (lrcData, response) = try? await session.data(from: lrcURL),
-               let httpResponse = response as? HTTPURLResponse,
-               httpResponse.statusCode == 200 {
+            if let (lrcData, _) = try? await downloadData(from: lrcURL, maximumBytes: Self.maxLRCBytes, session: session) {
                 let text = String(data: lrcData, encoding: .utf8)
                     ?? String(data: lrcData, encoding: .utf16)
                 if let content = text {
@@ -529,9 +566,8 @@ class LyricPlayer: ObservableObject {
         }
 
         for lrcURL in candidates {
-            guard let (data, response) = try? await session.data(from: lrcURL),
-                  let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else { continue }
+            guard let validatedURL = try? validatedRemoteURL(lrcURL),
+                  let (data, _) = try? await downloadData(from: validatedURL, maximumBytes: Self.maxLRCBytes, session: session) else { continue }
 
             let text = String(data: data, encoding: .utf8)
                 ?? String(data: data, encoding: .utf16)
@@ -550,11 +586,6 @@ class LyricPlayer: ObservableObject {
 
     func loadAudio(url: URL) {
         let accessing = url.startAccessingSecurityScopedResource()
-        defer {
-            if accessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
 
         do {
             audioPlayer = try AVAudioPlayer(contentsOf: url)
@@ -563,12 +594,20 @@ class LyricPlayer: ObservableObject {
             audioPlayer?.prepareToPlay()
             audioPlayer?.volume = isMuted ? 0 : volume
             duration = audioPlayer?.duration ?? 0
+            stopAccessingAudioResource()
+            if accessing {
+                audioSecurityScopedURL = url
+            }
             audioURL = url
             audioFileName = url.lastPathComponent
             currentTime = 0
-            UserDefaults.standard.set(url.path, forKey: Self.audioPathKey)
+            saveSecurityScopedBookmark(for: url, key: Self.audioBookmarkKey)
+            Self.ud.removeObject(forKey: Self.audioPathKey)
             updateNowPlayingInfo()
         } catch {
+            if accessing {
+                url.stopAccessingSecurityScopedResource()
+            }
             print("Audio load error: \(error)")
         }
 
@@ -610,6 +649,8 @@ class LyricPlayer: ObservableObject {
     func clearAll() {
         stop()
         audioPlayer = nil
+        stopAccessingAudioResource()
+        removeTemporaryAudioIfNeeded()
         audioURL = nil
         lrcURL = nil
         audioFileName = ""
@@ -618,7 +659,102 @@ class LyricPlayer: ObservableObject {
         duration = 0
         Self.ud.removeObject(forKey: Self.audioPathKey)
         Self.ud.removeObject(forKey: Self.lrcPathKey)
+        Self.ud.removeObject(forKey: Self.audioBookmarkKey)
+        Self.ud.removeObject(forKey: Self.lrcBookmarkKey)
         refreshDisplay()
+    }
+
+    private func validatedRemoteURL(_ url: URL) throws -> URL {
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(), !host.isEmpty else {
+            throw LoadError.insecureURL
+        }
+
+        let blockedHosts = ["localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"]
+        if blockedHosts.contains(host) || host.hasSuffix(".localhost") || isPrivateIPAddress(host) {
+            throw LoadError.localNetworkURL
+        }
+        return url
+    }
+
+    private func isPrivateIPAddress(_ host: String) -> Bool {
+        if host == "::1" || host == "::" || host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") {
+            return true
+        }
+        let octets = host.split(separator: ".").compactMap { UInt8($0) }
+        guard octets.count == 4 else { return false }
+        return octets[0] == 10
+            || octets[0] == 127
+            || (octets[0] == 169 && octets[1] == 254)
+            || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+            || octets[0] == 0
+    }
+
+    private func downloadData(from url: URL, maximumBytes: Int, session: URLSession) async throws -> (Data, HTTPURLResponse) {
+        let validatedURL = try validatedRemoteURL(url)
+        let (temporaryURL, response) = try await session.download(from: validatedURL)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode),
+              let finalURL = httpResponse.url,
+              (try? validatedRemoteURL(finalURL)) != nil else {
+            throw LoadError.invalidResponse
+        }
+        if httpResponse.expectedContentLength > Int64(maximumBytes) {
+            throw LoadError.responseTooLarge
+        }
+        let values = try temporaryURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true,
+              let fileSize = values.fileSize,
+              fileSize <= maximumBytes else {
+            throw LoadError.responseTooLarge
+        }
+        return (try Data(contentsOf: temporaryURL, options: .mappedIfSafe), httpResponse)
+    }
+
+    private func removeTemporaryAudioIfNeeded() {
+        guard let audioURL,
+              audioURL.isFileURL,
+              audioURL.path.hasPrefix(FileManager.default.temporaryDirectory.path) else { return }
+        try? FileManager.default.removeItem(at: audioURL)
+    }
+
+    private func stopAccessingAudioResource() {
+        audioSecurityScopedURL?.stopAccessingSecurityScopedResource()
+        audioSecurityScopedURL = nil
+    }
+
+    private func saveSecurityScopedBookmark(for url: URL, key: String) {
+        do {
+            let data = try url.bookmarkData(
+                options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            Self.ud.set(data, forKey: key)
+        } catch {
+            print("Unable to save file access permission")
+        }
+    }
+
+    private func resolveSecurityScopedBookmark(forKey key: String) -> URL? {
+        guard let data = Self.ud.data(forKey: key) else { return nil }
+        do {
+            var isStale = false
+            let url = try URL(
+                resolvingBookmarkData: data,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            if isStale {
+                saveSecurityScopedBookmark(for: url, key: key)
+            }
+            return url
+        } catch {
+            Self.ud.removeObject(forKey: key)
+            return nil
+        }
     }
 
     func seek(to time: TimeInterval) {
@@ -763,19 +899,15 @@ class LyricPlayer: ObservableObject {
     // MARK: - Restore Last Files
 
     private func restoreLastFiles() {
-        if let saved = UserDefaults.standard.string(forKey: Self.audioPathKey) {
-            if saved.hasPrefix("http://") || saved.hasPrefix("https://") {
-                // Remote URL
-                loadAudioFromURL(saved)
-            } else if FileManager.default.fileExists(atPath: saved) {
-                // Local file
-                loadAudio(url: URL(fileURLWithPath: saved))
-            }
-        } else if let lrcPath = UserDefaults.standard.string(forKey: Self.lrcPathKey) {
-            let url = URL(fileURLWithPath: lrcPath)
-            if FileManager.default.fileExists(atPath: lrcPath) {
-                loadLRC(url: url)
-            }
+        if let audioBookmarkURL = resolveSecurityScopedBookmark(forKey: Self.audioBookmarkKey) {
+            loadAudio(url: audioBookmarkURL)
+        } else if let savedRemoteURL = Self.ud.string(forKey: Self.audioPathKey),
+                  savedRemoteURL.hasPrefix("https://") {
+            loadAudioFromURL(savedRemoteURL)
+        }
+
+        if let lrcBookmarkURL = resolveSecurityScopedBookmark(forKey: Self.lrcBookmarkKey) {
+            loadLRC(url: lrcBookmarkURL)
         }
     }
 
