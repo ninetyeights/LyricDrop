@@ -349,6 +349,7 @@ struct MenuBarView: View {
 
     private func openLRCFile() {
         let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "lrc") ?? .plainText]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
 

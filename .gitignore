@@ -31,7 +31,7 @@ Package.resolved
 release/
 *.dmg
 
-# Local secrets and signing material
+# Local secrets, signing material, and provisioning profiles
 .env
 .env.*
 !.env.example
@@ -40,3 +40,4 @@ release/
 *.pfx
 *.p12
 secrets.json
+*.mobileprovision

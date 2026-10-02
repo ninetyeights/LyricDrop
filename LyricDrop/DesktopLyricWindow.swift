@@ -451,9 +451,6 @@ struct DesktopLyricView: View {
         let gradient = LinearGradient(colors: player.lyricTheme.colors, startPoint: .leading, endPoint: .trailing)
         let shadowColor = player.lyricShadowEnabled ? Color.black.opacity(0.6) : .clear
         let idx = player.currentIndex
-        let time = player.currentTime
-        let dur = player.duration
-
         let layout = marqueeClampedLayout()
 
         return GeometryReader { geo in
